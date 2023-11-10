@@ -4,46 +4,65 @@
 #include <semaphore.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/mman.h>
 
 #define BUFFER_SIZE 2
 
-int buffer[BUFFER_SIZE];
-sem_t *empty, *full, *mutex;
-int in = 0;  // Index for the next item to be produced
-int out = 0; // Index for the next item to be consumed
+int* buffer;
+sem_t* mutex;
+sem_t* empty;
+sem_t* full;
 const int MAX_ITEMS = 5;
+int items_consumed = 0; // Initialize the item counter
 
-void *consumer(void *arg) {
+void* consumer(void* arg) {
     while (1) {
         sem_wait(full);
         sem_wait(mutex);
 
-        // Consume item from the buffer
-        int item = buffer[out];
-        printf("Consumed: %d\n", item);
-        out = (out + 1) % BUFFER_SIZE;
+        if (items_consumed == MAX_ITEMS) {
+            // Signal the producer to exit
+            sem_post(mutex);
+            sem_post(empty);
+            break;
+        }
+
+        // Critical Section: Consume item from the buffer
+        int item = buffer[0];
+        printf("Consumed item %d\n", item);
+        items_consumed++;
 
         sem_post(mutex);
         sem_post(empty);
-        sleep(1);  // Simulate work
 
-        if (item == MAX_ITEMS) {
-            break;  // Break the loop after consuming the last item
-        }
+        sleep(1);  // Simulate some work
     }
-
+    
     pthread_exit(NULL);  // Terminate the thread
 }
 
 int main() {
-    empty = sem_open("/my_empty", O_CREAT, 0666, BUFFER_SIZE);
-    full = sem_open("/my_full", O_CREAT, 0666, 0);
-    mutex = sem_open("/my_mutex", O_CREAT, 0666, 1);
+    // Shared memory setup (same as in producer)
+    int shm_fd = shm_open("/buffer", O_CREAT | O_RDWR, 0666);
+    ftruncate(shm_fd, sizeof(int) * BUFFER_SIZE);
+    buffer = (int*)mmap(NULL, sizeof(int) * BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
 
-    pthread_t cons_thread;
-    pthread_create(&cons_thread, NULL, consumer, NULL);
+    mutex = sem_open("/mutex", O_CREAT | O_RDWR, 0666, 1);
+    empty = sem_open("/empty", O_CREAT | O_RDWR, 0666, BUFFER_SIZE);
+    full = sem_open("/full", O_CREAT | O_RDWR, 0666, 0);
 
-    pthread_join(cons_thread, NULL);
+    // Thread setup (or use separate processes if required)
+    pthread_t consumer_thread;
+    pthread_create(&consumer_thread, NULL, consumer, NULL);
+
+    pthread_join(consumer_thread, NULL);
+
+    // Cleanup (same as in producer)
+    munmap(buffer, sizeof(int) * BUFFER_SIZE);
+    close(shm_fd);
+    sem_unlink("/mutex");
+    sem_unlink("/empty");
+    sem_unlink("/full");
 
     return 0;
 }
